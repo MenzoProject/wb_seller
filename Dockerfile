@@ -17,7 +17,7 @@ RUN apt-get update \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 
 # Устанавливаем зависимости проекта отдельным слоем для использования кэша Docker.
 RUN pip install --no-cache-dir .
