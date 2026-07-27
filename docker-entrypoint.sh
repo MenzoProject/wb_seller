@@ -6,6 +6,7 @@
 # и делает контейнер самодостаточным.
 
 set -e
+export PYTHONPATH=/app
 
 echo "[entrypoint] Применение миграций базы данных..."
 alembic upgrade head
