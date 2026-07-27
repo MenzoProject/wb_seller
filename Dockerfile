@@ -18,7 +18,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
-COPY src ./SRC
+COPY src ./src
 COPY README.md ./README.md
 
 # Устанавливаем проект и все его зависимости. Каталог src должен уже
