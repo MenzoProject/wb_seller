@@ -1,6 +1,6 @@
 [project]
 name = "wb-ozon-reseller-bot"
-version = "0.1.0"
+version = "1.0.0"
 description = "Production-ready Telegram-бот для автоматизации работы реселлеров Wildberries и Ozon"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -14,7 +14,7 @@ dependencies = [
     "SQLAlchemy[asyncio]==2.0.36",
     "asyncpg==0.30.0",
     "alembic==1.14.0",
-    "pydantic==2.9.2",
+    "pydantic==2.10.3",
     "pydantic-settings==2.7.0",
     "redis==5.2.1",
     "APScheduler==3.10.4",

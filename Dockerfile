@@ -17,19 +17,25 @@ RUN apt-get update \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml ./
+COPY src ./src
 
-# Устанавливаем зависимости проекта отдельным слоем для использования кэша Docker.
+# Устанавливаем проект и все его зависимости. Каталог src должен уже
+# присутствовать на этом шаге: build-backend hatchling собирает пакет
+# из pyproject.toml и требует наличия исходников, поэтому объединить
+# эту команду с отдельным кэшируемым слоем "только зависимости" без
+# генерации requirements.txt невозможно.
 RUN pip install --no-cache-dir .
 
-COPY src ./src
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
 
-RUN useradd --create-home --uid 1000 appuser \
+RUN chmod +x ./docker-entrypoint.sh \
+    && useradd --create-home --uid 1000 appuser \
     && mkdir -p /app/logs \
     && chown -R appuser:appuser /app
 
 USER appuser
 
-CMD ["python", "-m", "src.main"]
+ENTRYPOINT ["./docker-entrypoint.sh"]

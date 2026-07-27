@@ -106,7 +106,11 @@ async def handle_menu_interrupts_early_flow(
                 CancelApplicationDTO(application_id=application_id, user_id=current_user.id)
             )
         except ApplicationNotFoundError:
-            pass
+            logger.info(
+                "Заявка id=%s уже была обработана к моменту прерывания пользователем id=%s",
+                application_id,
+                current_user.id,
+            )
 
     await state.clear()
     await message.answer(

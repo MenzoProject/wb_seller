@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from aiogram import Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
@@ -19,6 +21,8 @@ from src.bot.keyboards.user.main_menu import get_main_menu_keyboard
 from src.bot.texts.user_texts import WELCOME_TEXT
 from src.domain.entities.user import User
 from src.domain.exceptions.application_exceptions import ApplicationNotFoundError
+
+logger = logging.getLogger(__name__)
 
 router = Router(name="user_start")
 
@@ -48,7 +52,11 @@ async def handle_start(
                 CancelApplicationDTO(application_id=application_id, user_id=current_user.id)
             )
         except ApplicationNotFoundError:
-            pass
+            logger.info(
+                "Заявка id=%s уже была обработана к моменту вызова /start пользователем id=%s",
+                application_id,
+                current_user.id,
+            )
     await state.clear()
 
     await message.answer(
