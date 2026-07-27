@@ -52,6 +52,16 @@ class ProductSlotsChangeStates(StatesGroup):
     waiting_new_slots = State()
 
 
+class BankFormStates(StatesGroup):
+    """Состояние FSM добавления нового банка в справочник администратором.
+
+    Attributes:
+        waiting_name: Ожидание названия нового банка.
+    """
+
+    waiting_name = State()
+
+
 class ApplicationReviewStates(StatesGroup):
     """Состояния FSM при рассмотрении заявки администратором.
 
