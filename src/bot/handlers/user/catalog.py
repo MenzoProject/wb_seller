@@ -158,6 +158,12 @@ async def handle_order_product(
         await callback.answer("Товар не найден.", show_alert=True)
         return
     except Exception:
+        # Атомарность гарантируется на уровне ApplicationService.create_application
+        # (SAVEPOINT-транзакция через `_atomic`): даже если это исключение
+        # перехвачено здесь и не пробрасывается дальше, любые частично
+        # применённые изменения (например, уменьшение остатка товара) уже
+        # были откачены до попадания сюда — заявка либо создана полностью,
+        # либо не создана вовсе.
         logger.exception("Ошибка при создании заявки пользователем id=%s", current_user.id)
         await callback.answer(ORDER_GENERIC_ERROR_TEXT, show_alert=True)
         return
