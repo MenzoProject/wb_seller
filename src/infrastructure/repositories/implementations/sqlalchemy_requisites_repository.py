@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.entities.bank import Bank
 from src.domain.entities.requisites import UserRequisites
 from src.domain.exceptions.base import EntityNotFoundError
+from src.domain.exceptions.requisites_exceptions import BankNameAlreadyExistsError
 from src.infrastructure.database.models.bank import Bank as BankModel
 from src.infrastructure.database.models.user_requisites import (
     UserRequisites as UserRequisitesModel,
@@ -152,3 +154,51 @@ class SQLAlchemyRequisitesRepository:
         """Возвращает банк по внутреннему идентификатору."""
         model = await self._session.get(BankModel, bank_id)
         return self._bank_to_entity(model) if model is not None else None
+
+    async def list_all_banks(self) -> list[Bank]:
+        """Возвращает полный справочник банков (включая деактивированные)."""
+        statement = select(BankModel).order_by(BankModel.name.asc())
+        result = await self._session.execute(statement)
+        return [self._bank_to_entity(model) for model in result.scalars().all()]
+
+    async def get_bank_by_name(self, name: str) -> Bank | None:
+        """Возвращает банк по точному названию (без учёта регистра)."""
+        statement = select(BankModel).where(func.lower(BankModel.name) == name.lower())
+        result = await self._session.execute(statement)
+        model = result.scalar_one_or_none()
+        return self._bank_to_entity(model) if model is not None else None
+
+    async def create_bank(self, name: str) -> Bank:
+        """Добавляет новый банк в справочник в активном состоянии.
+
+        Вставка выполняется во вложенной транзакции (SAVEPOINT): если
+        одновременно с проверкой уникальности в `RequisitesService.create_bank`
+        другой администратор успеет создать банк с таким же названием,
+        нарушение уникального ограничения `banks.name` откатит только эту
+        вставку, не затрагивая остальную часть текущей единицы работы.
+
+        Raises:
+            BankNameAlreadyExistsError: Если банк с таким названием уже
+                существует (обнаружено на уровне уникального ограничения БД).
+        """
+        model = BankModel(name=name, is_active=True)
+        try:
+            async with self._session.begin_nested():
+                self._session.add(model)
+                await self._session.flush()
+        except IntegrityError as error:
+            raise BankNameAlreadyExistsError(name) from error
+
+        await self._session.refresh(model)
+        return self._bank_to_entity(model)
+
+    async def set_bank_active(self, bank_id: int, is_active: bool) -> Bank:
+        """Включает либо отключает банк для выбора пользователями."""
+        model = await self._session.get(BankModel, bank_id)
+        if model is None:
+            raise EntityNotFoundError("Банк", bank_id)
+
+        model.is_active = is_active
+        await self._session.flush()
+        await self._session.refresh(model)
+        return self._bank_to_entity(model)
