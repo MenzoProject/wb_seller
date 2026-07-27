@@ -9,6 +9,7 @@ from src.domain.entities.bank import Bank
 from src.domain.entities.requisites import UserRequisites
 from src.domain.exceptions.requisites_exceptions import (
     BankInactiveError,
+    BankNameAlreadyExistsError,
     BankNotFoundError,
     RequisitesNotFoundError,
 )
@@ -68,6 +69,65 @@ class RequisitesService:
             Список активных банков.
         """
         return await self._requisites_repository.list_active_banks()
+
+    async def list_all_banks(self) -> list[Bank]:
+        """Возвращает полный справочник банков для панели администратора.
+
+        В отличие от `list_banks`, включает и деактивированные банки, чтобы
+        администратор мог видеть их и при необходимости включить обратно.
+
+        Returns:
+            Список всех банков, упорядоченный по названию.
+        """
+        return await self._requisites_repository.list_all_banks()
+
+    async def create_bank(self, name: str) -> Bank:
+        """Добавляет новый банк в справочник (доступное для выбора действие администратора).
+
+        Args:
+            name: Название нового банка.
+
+        Returns:
+            Созданная доменная сущность банка.
+
+        Raises:
+            BankNameAlreadyExistsError: Если банк с таким названием (без
+                учёта регистра) уже существует в справочнике.
+        """
+        normalized_name = name.strip()
+        existing_bank = await self._requisites_repository.get_bank_by_name(normalized_name)
+        if existing_bank is not None:
+            raise BankNameAlreadyExistsError(normalized_name)
+
+        bank = await self._requisites_repository.create_bank(normalized_name)
+        logger.info("Создан банк id=%s name=%r", bank.id, bank.name)
+        return bank
+
+    async def set_bank_active(self, bank_id: int, is_active: bool) -> Bank:
+        """Включает либо отключает банк для выбора пользователями.
+
+        Args:
+            bank_id: Внутренний идентификатор банка.
+            is_active: Новое значение признака доступности банка.
+
+        Returns:
+            Обновлённая доменная сущность банка.
+
+        Raises:
+            BankNotFoundError: Если банк с указанным `id` не найден.
+        """
+        bank = await self._requisites_repository.get_bank_by_id(bank_id)
+        if bank is None:
+            raise BankNotFoundError(bank_id)
+
+        updated_bank = await self._requisites_repository.set_bank_active(bank_id, is_active)
+        logger.info(
+            "Банк id=%s (%s) переключён в состояние is_active=%s",
+            bank_id,
+            bank.name,
+            is_active,
+        )
+        return updated_bank
 
     async def _ensure_bank_active(self, bank_id: int) -> None:
         """Проверяет, что указанный банк существует и доступен для выбора.
