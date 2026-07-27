@@ -139,11 +139,13 @@ class DIContainer:
                 payment_repository=payment_repository,
                 requisites_repository=requisites_repository,
                 log_repository=log_repository,
+                session=session,
             ),
             payment_service=PaymentService(
                 payment_repository=payment_repository,
                 application_repository=application_repository,
                 log_repository=log_repository,
+                session=session,
             ),
             requisites_service=RequisitesService(requisites_repository),
             statistics_service=StatisticsService(
