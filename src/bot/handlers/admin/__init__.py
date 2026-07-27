@@ -8,6 +8,7 @@ from src.bot.handlers.admin.admin_start import router as admin_start_router
 from src.bot.handlers.admin.applications_management import (
     router as applications_management_router,
 )
+from src.bot.handlers.admin.banks_management import router as banks_management_router
 from src.bot.handlers.admin.payments_management import router as payments_management_router
 from src.bot.handlers.admin.products_management import router as products_management_router
 from src.bot.handlers.admin.statistics import router as statistics_router
@@ -46,4 +47,5 @@ def get_admin_router(admin_ids: list[int]) -> Router:
     router.include_router(applications_management_router)
     router.include_router(payments_management_router)
     router.include_router(statistics_router)
+    router.include_router(banks_management_router)
     return router
