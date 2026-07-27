@@ -6,11 +6,58 @@ from html import escape
 
 from src.application.services.statistics_service import DashboardStatistics
 from src.bot.texts.user_texts import format_application_status
+from src.domain.entities.bank import Bank
 from src.domain.entities.product import Product
 
 ADMIN_WELCOME_TEXT = "🛠 <b>Панель администратора</b>\n\nВыберите раздел:"
 
-ADMIN_COMING_SOON_TEXT = "🛠 Этот раздел появится в боте совсем скоро."
+# --- Раздел «⚙ Настройки» ---
+
+ADMIN_SETTINGS_HEADER_TEXT = "⚙ <b>Настройки</b>\n\nВыберите раздел:"
+
+# --- Справочник банков ---
+
+ADMIN_BANKS_HEADER_TEXT = (
+    "🏦 <b>Справочник банков</b>\n\n"
+    "Активные банки предлагаются пользователям при сохранении реквизитов "
+    "для выплаты. Нажмите на банк, чтобы включить или отключить его."
+)
+
+ADMIN_BANKS_EMPTY_TEXT = (
+    "Справочник банков пуст. Нажмите «➕ Добавить банк», чтобы добавить первый — "
+    "без хотя бы одного активного банка пользователи не смогут сохранить реквизиты."
+)
+
+ADD_BANK_BUTTON_TEXT = "➕ Добавить банк"
+
+ASK_BANK_NAME_TEXT = "Введите название нового банка:"
+
+BANK_NAME_TOO_SHORT_TEXT = "Название банка должно содержать минимум 2 символа. Попробуйте ещё раз:"
+
+BANK_NAME_ALREADY_EXISTS_TEXT = (
+    "Банк с таким названием уже есть в справочнике. Введите другое название:"
+)
+
+BANK_CREATED_TEXT = "✅ Банк добавлен и доступен для выбора пользователями."
+
+BANK_ACTIVATED_TEXT = "✅ Банк включён и снова доступен для выбора."
+
+BANK_DEACTIVATED_TEXT = "🚫 Банк отключён и больше не будет предложен пользователям."
+
+BANK_NOT_FOUND_TEXT = "Банк не найден. Возможно, он уже был удалён."
+
+
+def format_admin_bank_list_item(bank: Bank) -> str:
+    """Формирует подпись кнопки банка в списке управления справочником.
+
+    Args:
+        bank: Доменная сущность банка.
+
+    Returns:
+        Строка с названием банка и пометкой текущего статуса.
+    """
+    status_marker = "✅" if bank.is_active else "🚫"
+    return f"{status_marker} {bank.name}"
 
 # --- Список и карточка товара ---
 
