@@ -54,3 +54,16 @@ class BankInactiveError(DomainError):
         """
         super().__init__(f"Банк id={bank_id} недоступен для выбора")
         self.bank_id = bank_id
+
+
+class BankNameAlreadyExistsError(DomainError):
+    """Банк с таким названием уже существует в справочнике."""
+
+    def __init__(self, name: str) -> None:
+        """Инициализирует исключение дублирования названия банка.
+
+        Args:
+            name: Название банка, уже присутствующее в справочнике.
+        """
+        super().__init__(f"Банк с названием «{name}» уже существует")
+        self.name = name
