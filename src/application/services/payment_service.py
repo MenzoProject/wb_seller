@@ -10,8 +10,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import date
 from decimal import Decimal
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.application.dto.payment_dto import MarkPaymentPaidDTO
 from src.domain.entities.log import Log
@@ -35,6 +39,7 @@ class PaymentService:
         payment_repository: PaymentRepository,
         application_repository: ApplicationRepository,
         log_repository: LogRepository,
+        session: AsyncSession,
     ) -> None:
         """Инициализирует сервис необходимыми репозиториями.
 
@@ -43,10 +48,29 @@ class PaymentService:
             application_repository: Реализация репозитория заявок (для
                 перевода связанной заявки в финальный статус PAID).
             log_repository: Реализация репозитория журнала аудита.
+            session: Асинхронная сессия SQLAlchemy, разделяемая всеми
+                репозиториями этого сервиса в рамках текущей единицы работы.
+                Используется для явного управления атомарностью
+                многошаговых операций через `_atomic`.
         """
         self._payment_repository = payment_repository
         self._application_repository = application_repository
         self._log_repository = log_repository
+        self._session = session
+
+    @asynccontextmanager
+    async def _atomic(self) -> AsyncIterator[None]:
+        """Открывает вложенную транзакцию (SAVEPOINT) для группы связанных операций.
+
+        См. подробное описание в `ApplicationService._atomic` — используется
+        тот же приём для гарантии того, что подтверждение выплаты и перевод
+        заявки в статус PAID применяются полностью либо не применяются вовсе.
+
+        Yields:
+            None. Используется исключительно как менеджер контекста.
+        """
+        async with self._session.begin_nested():
+            yield
 
     async def get_payment_by_application(self, application_id: int) -> Payment:
         """Возвращает выплату, связанную с указанной заявкой.
@@ -86,25 +110,28 @@ class PaymentService:
             raise ApplicationNotFoundError(dto.application_id)
 
         payment = await self.get_payment_by_application(dto.application_id)
-        payment.mark_paid(dto.admin_id)
-        updated_payment = await self._payment_repository.update(payment)
 
-        application.mark_paid()
-        await self._application_repository.update(application)
+        async with self._atomic():
+            payment.mark_paid(dto.admin_id)
+            updated_payment = await self._payment_repository.update(payment)
 
-        await self._log_repository.create(
-            Log(
-                id=None,
-                action="payment_marked_paid",
-                entity_type="Payment",
-                admin_id=dto.admin_id,
-                entity_id=updated_payment.id,
-                payload={
-                    "application_id": dto.application_id,
-                    "amount": str(updated_payment.amount),
-                },
+            application.mark_paid()
+            await self._application_repository.update(application)
+
+            await self._log_repository.create(
+                Log(
+                    id=None,
+                    action="payment_marked_paid",
+                    entity_type="Payment",
+                    admin_id=dto.admin_id,
+                    entity_id=updated_payment.id,
+                    payload={
+                        "application_id": dto.application_id,
+                        "amount": str(updated_payment.amount),
+                    },
+                )
             )
-        )
+
         logger.info(
             "Выплата id=%s по заявке id=%s подтверждена администратором id=%s",
             updated_payment.id,
