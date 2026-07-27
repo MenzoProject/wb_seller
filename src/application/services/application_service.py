@@ -9,7 +9,11 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import date
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.application.dto.application_dto import (
     ApproveOrderDTO,
@@ -57,6 +61,7 @@ class ApplicationService:
         payment_repository: PaymentRepository,
         requisites_repository: RequisitesRepository,
         log_repository: LogRepository,
+        session: AsyncSession,
     ) -> None:
         """Инициализирует сервис необходимыми репозиториями.
 
@@ -69,12 +74,45 @@ class ApplicationService:
             requisites_repository: Реализация репозитория реквизитов (для
                 проверки принадлежности реквизитов пользователю).
             log_repository: Реализация репозитория журнала аудита.
+            session: Асинхронная сессия SQLAlchemy, разделяемая всеми
+                репозиториями этого сервиса в рамках текущей единицы работы
+                (обрабатываемого апдейта Telegram). Используется напрямую
+                только для явного управления атомарностью многошаговых
+                операций через `_atomic` (см. `create_application`).
         """
         self._application_repository = application_repository
         self._product_repository = product_repository
         self._payment_repository = payment_repository
         self._requisites_repository = requisites_repository
         self._log_repository = log_repository
+        self._session = session
+
+    @asynccontextmanager
+    async def _atomic(self) -> AsyncIterator[None]:
+        """Открывает вложенную транзакцию (SAVEPOINT) для группы связанных операций.
+
+        Многошаговые операции этого сервиса (например, резервирование слота
+        товара и последующее создание заявки в `create_application`) должны
+        либо применяться полностью, либо не применяться вовсе. Внешняя
+        сессия БД фиксируется (`commit`) только по завершении обработки
+        всего апдейта Telegram в `DbSessionMiddleware`, поэтому её отдельный
+        rollback здесь недоступен без потери прогресса всей транзакции.
+
+        `session.begin_nested()` открывает SAVEPOINT: если исключение
+        возникает внутри блока `async with`, откатываются только изменения,
+        сделанные с момента открытия SAVEPOINT (например, уже выполненное
+        уменьшение `available_slots` товара), после чего исключение
+        пробрасывается дальше без изменений во внешней транзакции. Это
+        гарантирует атомарность создания заявки независимо от того, как
+        именно вызывающий код (обработчик бота) обработает исключение —
+        даже если обработчик перехватит его и не пробросит выше, частично
+        применённые изменения уже будут отменены на уровне SAVEPOINT.
+
+        Yields:
+            None. Используется исключительно как менеджер контекста.
+        """
+        async with self._session.begin_nested():
+            yield
 
     async def get_application(self, application_id: int) -> Application:
         """Возвращает заявку по внутреннему идентификатору.
@@ -141,6 +179,12 @@ class ApplicationService:
     async def create_application(self, dto: CreateApplicationDTO) -> Application:
         """Создаёт новую заявку на выкуп товара, резервируя слот товара.
 
+        Раздел резервирования слота товара и создания заявки выполняется в
+        рамках вложенной транзакции (`_atomic`, SAVEPOINT): если создание
+        заявки завершится ошибкой на любом шаге, уже уменьшённое количество
+        доступных слотов товара будет откачено, и остаток товара не
+        изменится — частичное применение изменений невозможно.
+
         Args:
             dto: Данные для создания заявки (пользователь и товар).
 
@@ -160,31 +204,33 @@ class ApplicationService:
         if active_application is not None:
             raise ApplicationAlreadyActiveError(dto.user_id, dto.product_id)
 
-        product = await self._product_repository.get_by_id(dto.product_id)
-        if product is None:
-            raise ProductNotFoundError(dto.product_id)
+        async with self._atomic():
+            product = await self._product_repository.get_by_id(dto.product_id)
+            if product is None:
+                raise ProductNotFoundError(dto.product_id)
 
-        product.reserve_slot()
-        await self._product_repository.update(product)
+            product.reserve_slot()
+            await self._product_repository.update(product)
 
-        application = Application(
-            id=None,
-            user_id=dto.user_id,
-            product_id=dto.product_id,
-            status=ApplicationStatus.NEW,
-        )
-        created_application = await self._application_repository.create(application)
-
-        await self._log_repository.create(
-            Log(
+            application = Application(
                 id=None,
-                action="application_created",
-                entity_type="Application",
                 user_id=dto.user_id,
-                entity_id=created_application.id,
-                payload={"product_id": dto.product_id},
+                product_id=dto.product_id,
+                status=ApplicationStatus.NEW,
             )
-        )
+            created_application = await self._application_repository.create(application)
+
+            await self._log_repository.create(
+                Log(
+                    id=None,
+                    action="application_created",
+                    entity_type="Application",
+                    user_id=dto.user_id,
+                    entity_id=created_application.id,
+                    payload={"product_id": dto.product_id},
+                )
+            )
+
         logger.info(
             "Создана заявка id=%s пользователем id=%s на товар id=%s",
             created_application.id,
@@ -224,18 +270,20 @@ class ApplicationService:
             InvalidApplicationTransitionError: Если заявка не в статусе WAIT_ORDER_SCREEN.
         """
         application = await self.get_application(dto.application_id)
-        application.submit_order_screenshot(dto.file_id)
-        updated_application = await self._application_repository.update(application)
 
-        await self._log_repository.create(
-            Log(
-                id=None,
-                action="order_screenshot_submitted",
-                entity_type="Application",
-                user_id=application.user_id,
-                entity_id=application.id,
+        async with self._atomic():
+            application.submit_order_screenshot(dto.file_id)
+            updated_application = await self._application_repository.update(application)
+
+            await self._log_repository.create(
+                Log(
+                    id=None,
+                    action="order_screenshot_submitted",
+                    entity_type="Application",
+                    user_id=application.user_id,
+                    entity_id=application.id,
+                )
             )
-        )
         return updated_application
 
     async def approve_order(self, dto: ApproveOrderDTO) -> Application:
@@ -256,18 +304,20 @@ class ApplicationService:
             InvalidApplicationTransitionError: Если заявка не в статусе ORDER_ON_REVIEW.
         """
         application = await self.get_application(dto.application_id)
-        application.approve_order()
-        updated_application = await self._application_repository.update(application)
 
-        await self._log_repository.create(
-            Log(
-                id=None,
-                action="order_approved",
-                entity_type="Application",
-                admin_id=dto.admin_id,
-                entity_id=application.id,
+        async with self._atomic():
+            application.approve_order()
+            updated_application = await self._application_repository.update(application)
+
+            await self._log_repository.create(
+                Log(
+                    id=None,
+                    action="order_approved",
+                    entity_type="Application",
+                    admin_id=dto.admin_id,
+                    entity_id=application.id,
+                )
             )
-        )
         return updated_application
 
     async def request_order_screenshot_resend(
@@ -286,19 +336,21 @@ class ApplicationService:
             InvalidApplicationTransitionError: Если заявка не в статусе ORDER_ON_REVIEW.
         """
         application = await self.get_application(dto.application_id)
-        application.request_order_screenshot_resend(dto.reason)
-        updated_application = await self._application_repository.update(application)
 
-        await self._log_repository.create(
-            Log(
-                id=None,
-                action="order_screenshot_resend_requested",
-                entity_type="Application",
-                admin_id=dto.admin_id,
-                entity_id=application.id,
-                payload={"reason": dto.reason},
+        async with self._atomic():
+            application.request_order_screenshot_resend(dto.reason)
+            updated_application = await self._application_repository.update(application)
+
+            await self._log_repository.create(
+                Log(
+                    id=None,
+                    action="order_screenshot_resend_requested",
+                    entity_type="Application",
+                    admin_id=dto.admin_id,
+                    entity_id=application.id,
+                    payload={"reason": dto.reason},
+                )
             )
-        )
         return updated_application
 
     async def reject_application(self, dto: RejectApplicationDTO) -> Application:
@@ -316,24 +368,27 @@ class ApplicationService:
             InvalidApplicationTransitionError: Если заявка уже в финальном статусе.
         """
         application = await self.get_application(dto.application_id)
-        application.reject(dto.reason)
-        updated_application = await self._application_repository.update(application)
 
-        product = await self._product_repository.get_by_id(application.product_id)
-        if product is not None:
-            product.release_slot()
-            await self._product_repository.update(product)
+        async with self._atomic():
+            application.reject(dto.reason)
+            updated_application = await self._application_repository.update(application)
 
-        await self._log_repository.create(
-            Log(
-                id=None,
-                action="application_rejected",
-                entity_type="Application",
-                admin_id=dto.admin_id,
-                entity_id=application.id,
-                payload={"reason": dto.reason},
+            product = await self._product_repository.get_by_id(application.product_id)
+            if product is not None:
+                product.release_slot()
+                await self._product_repository.update(product)
+
+            await self._log_repository.create(
+                Log(
+                    id=None,
+                    action="application_rejected",
+                    entity_type="Application",
+                    admin_id=dto.admin_id,
+                    entity_id=application.id,
+                    payload={"reason": dto.reason},
+                )
             )
-        )
+
         logger.info(
             "Заявка id=%s отклонена администратором id=%s: %s",
             application.id,
@@ -366,23 +421,25 @@ class ApplicationService:
         if application.user_id != dto.user_id:
             raise ApplicationNotFoundError(dto.application_id)
 
-        application.reject("Отменено пользователем")
-        updated_application = await self._application_repository.update(application)
+        async with self._atomic():
+            application.reject("Отменено пользователем")
+            updated_application = await self._application_repository.update(application)
 
-        product = await self._product_repository.get_by_id(application.product_id)
-        if product is not None:
-            product.release_slot()
-            await self._product_repository.update(product)
+            product = await self._product_repository.get_by_id(application.product_id)
+            if product is not None:
+                product.release_slot()
+                await self._product_repository.update(product)
 
-        await self._log_repository.create(
-            Log(
-                id=None,
-                action="application_cancelled_by_user",
-                entity_type="Application",
-                user_id=dto.user_id,
-                entity_id=application.id,
+            await self._log_repository.create(
+                Log(
+                    id=None,
+                    action="application_cancelled_by_user",
+                    entity_type="Application",
+                    user_id=dto.user_id,
+                    entity_id=application.id,
+                )
             )
-        )
+
         logger.info(
             "Заявка id=%s отменена пользователем id=%s", application.id, dto.user_id
         )
@@ -407,22 +464,23 @@ class ApplicationService:
         if product is None:
             raise ProductNotFoundError(application.product_id)
 
-        application.confirm_receive(
-            review_required=product.review_required,
-            receipt_required=product.receipt_required,
-        )
-        await self._finalize_wait_payment_if_reached(application)
-        updated_application = await self._application_repository.update(application)
-
-        await self._log_repository.create(
-            Log(
-                id=None,
-                action="receive_confirmed",
-                entity_type="Application",
-                user_id=application.user_id,
-                entity_id=application.id,
+        async with self._atomic():
+            application.confirm_receive(
+                review_required=product.review_required,
+                receipt_required=product.receipt_required,
             )
-        )
+            await self._finalize_wait_payment_if_reached(application)
+            updated_application = await self._application_repository.update(application)
+
+            await self._log_repository.create(
+                Log(
+                    id=None,
+                    action="receive_confirmed",
+                    entity_type="Application",
+                    user_id=application.user_id,
+                    entity_id=application.id,
+                )
+            )
         return updated_application
 
     async def submit_review_screenshot(self, dto: SubmitReviewScreenshotDTO) -> Application:
@@ -444,21 +502,22 @@ class ApplicationService:
         if product is None:
             raise ProductNotFoundError(application.product_id)
 
-        application.submit_review_screenshot(
-            dto.file_id, receipt_required=product.receipt_required
-        )
-        await self._finalize_wait_payment_if_reached(application)
-        updated_application = await self._application_repository.update(application)
-
-        await self._log_repository.create(
-            Log(
-                id=None,
-                action="review_screenshot_submitted",
-                entity_type="Application",
-                user_id=application.user_id,
-                entity_id=application.id,
+        async with self._atomic():
+            application.submit_review_screenshot(
+                dto.file_id, receipt_required=product.receipt_required
             )
-        )
+            await self._finalize_wait_payment_if_reached(application)
+            updated_application = await self._application_repository.update(application)
+
+            await self._log_repository.create(
+                Log(
+                    id=None,
+                    action="review_screenshot_submitted",
+                    entity_type="Application",
+                    user_id=application.user_id,
+                    entity_id=application.id,
+                )
+            )
         return updated_application
 
     async def submit_receipt_link(self, dto: SubmitReceiptLinkDTO) -> Application:
@@ -475,19 +534,21 @@ class ApplicationService:
             InvalidApplicationTransitionError: Если заявка не в статусе WAIT_RECEIPT_LINK.
         """
         application = await self.get_application(dto.application_id)
-        application.submit_receipt_link(dto.receipt_link)
-        await self._finalize_wait_payment_if_reached(application)
-        updated_application = await self._application_repository.update(application)
 
-        await self._log_repository.create(
-            Log(
-                id=None,
-                action="receipt_link_submitted",
-                entity_type="Application",
-                user_id=application.user_id,
-                entity_id=application.id,
+        async with self._atomic():
+            application.submit_receipt_link(dto.receipt_link)
+            await self._finalize_wait_payment_if_reached(application)
+            updated_application = await self._application_repository.update(application)
+
+            await self._log_repository.create(
+                Log(
+                    id=None,
+                    action="receipt_link_submitted",
+                    entity_type="Application",
+                    user_id=application.user_id,
+                    entity_id=application.id,
+                )
             )
-        )
         return updated_application
 
     async def assign_requisites(self, dto: AssignRequisitesDTO) -> Application:
