@@ -18,7 +18,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
-COPY src ./src
+COPY src ./SRC
+COPY README.md ./README.md
 
 # Устанавливаем проект и все его зависимости. Каталог src должен уже
 # присутствовать на этом шаге: build-backend hatchling собирает пакет
