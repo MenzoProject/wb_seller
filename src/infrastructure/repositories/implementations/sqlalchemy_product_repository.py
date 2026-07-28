@@ -126,7 +126,7 @@ class SQLAlchemyProductRepository:
         )
         self._session.add(model)
         await self._session.flush()
-        await self._session.refresh(model, attribute_names=["photos"])
+        await self._session.refresh(model)
         return self._to_entity(model)
 
     async def update(self, product: Product) -> Product:
@@ -161,7 +161,7 @@ class SQLAlchemyProductRepository:
         )
 
         await self._session.flush()
-        await self._session.refresh(model, attribute_names=["photos"])
+        await self._session.refresh(model)
         return self._to_entity(model)
 
     async def count_available(self) -> int:
